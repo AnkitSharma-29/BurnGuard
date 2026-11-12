@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.1
+
+**Upgrade note:** run `burnguard install` again after upgrading. It adds the new
+`PostToolUseFailure` hook. Without it, failing commands are still not counted.
+
+### Fixed
+- **Loops of failing commands were never blocked.** Claude Code reports a failed
+  tool call (such as a test command exiting non-zero) only through
+  `PostToolUseFailure`, which BurnGuard did not handle. Failed calls now count,
+  with the error as their result.
+- **Identical calls sent in one parallel batch slipped past the limit.** All
+  their PreToolUse checks ran before any call finished. Running calls are now
+  reserved and counted under the lock.
+- The `status` counter is renamed to "Repeat calls blocked", because it counts
+  blocked calls, not loops.
+
+### Added
+- Demo GIF in the README, replayed from real Claude Code sessions.
+
 ## 0.2.0: BurnGuard
 
 The project formerly called Qutato, rebuilt and renamed. Breaking: new package

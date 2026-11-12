@@ -106,7 +106,7 @@ def on_pre_tool(event: dict[str, Any], cfg: Config, budget: Budget) -> dict | No
             )
 
     loops = SessionLoops(event.get("session_id", "default"), cfg.loop_window)
-    n = loops.check(tool, tool_input)
+    n = loops.reserve(tool, tool_input, event.get("tool_use_id"), cfg.loop_max_repeats)
     if n >= cfg.loop_max_repeats:
         _stat("loops_blocked")
         blocks = loops.add_block()
@@ -116,7 +116,7 @@ def on_pre_tool(event: dict[str, Any], cfg: Config, budget: Budget) -> dict | No
                 stop=True,
             )
         return _deny(
-            f"BurnGuard: this exact {tool} call already ran {n} times with the same result. "
+            f"BurnGuard: this exact {tool} call was already made {n} times without a different result. "
             "Repeating it will not change anything. Try a different approach, or ask the user."
         )
     return None
@@ -125,7 +125,9 @@ def on_pre_tool(event: dict[str, Any], cfg: Config, budget: Budget) -> dict | No
 def on_post_tool(event: dict[str, Any], cfg: Config, budget: Budget) -> dict | None:
     tool = event.get("tool_name", "")
     tool_input, response = event.get("tool_input") or {}, event.get("tool_response")
-    SessionLoops(event.get("session_id", "default"), cfg.loop_window).record(tool, tool_input, response)
+    SessionLoops(event.get("session_id", "default"), cfg.loop_window).record(
+        tool, tool_input, response, event.get("tool_use_id")
+    )
 
     out: dict[str, Any] = {}
     specific: dict[str, Any] = {"hookEventName": "PostToolUse"}
@@ -163,6 +165,25 @@ def on_post_tool(event: dict[str, Any], cfg: Config, budget: Budget) -> dict | N
     return out or None
 
 
+def on_post_tool_failure(event: dict[str, Any], cfg: Config, budget: Budget) -> dict | None:
+    """A failed call (e.g. Bash exiting non-zero) only fires PostToolUseFailure.
+
+    Failing commands are the most common loop, so the error counts as the
+    call's result. An interrupted call has no real result and is not counted.
+    """
+    loops = SessionLoops(event.get("session_id", "default"), cfg.loop_window)
+    if event.get("is_interrupt"):
+        loops.release(event.get("tool_use_id"))
+        return None
+    loops.record(
+        event.get("tool_name", ""),
+        event.get("tool_input") or {},
+        {"error": event.get("error")},
+        event.get("tool_use_id"),
+    )
+    return None
+
+
 def _strings(value: Any, depth: int = 0) -> list[str]:
     """All string leaves of a tool response (Read nests content under file.content)."""
     if isinstance(value, str):
@@ -194,6 +215,7 @@ HANDLERS = {
     "UserPromptSubmit": on_user_prompt,
     "PreToolUse": on_pre_tool,
     "PostToolUse": on_post_tool,
+    "PostToolUseFailure": on_post_tool_failure,
 }
 
 

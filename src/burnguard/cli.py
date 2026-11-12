@@ -47,7 +47,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"   project ({Path.cwd().name}): {'on' if install.installed(project) else 'off'}"
     )
     labels = {
-        "loops_blocked": "Loops blocked",
+        "loops_blocked": "Repeat calls blocked",
         "budget_stops": "Budget stops",
         "secrets_blocked": "Secrets blocked in prompts",
         "secrets_redacted": "Secrets redacted from output",

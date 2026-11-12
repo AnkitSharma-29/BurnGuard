@@ -11,14 +11,9 @@ BurnGuard is a small, local guard for [Claude Code](https://code.claude.com) and
 
 It has no runtime dependencies, makes no network calls, and keeps all state in `~/.burnguard/`.
 
-Real Claude Code session, asked to run `echo still-failing` six times (reply trimmed):
+![BurnGuard demo: an agent re-running a failing test is blocked, an AWS key in command output is redacted before the model sees it, and burnguard status shows what was caught](docs/demo.gif)
 
-```text
-I ran the command three times, and each returned `still-failing`. The fourth call was refused:
-
-PreToolUse:Bash hook error: BurnGuard: this exact Bash call already ran 3 times with the
-same result. Repeating it will not change anything. Try a different approach, or ask the user.
-```
+<sub>The demo replays real Claude Code sessions. The text is the captured output, trimmed. The key is a fake one made for the demo.</sub>
 
 ## Install
 
@@ -30,20 +25,20 @@ burnguard install          # adds hooks to ~/.claude/settings.json
 burnguard budget set 2000000
 ```
 
-Restart Claude Code. That's it. Check what it has done at any time. This is the real output from the end-to-end test runs:
+Restart Claude Code. That's it. Check what it has done at any time. This is real output from the demo session above:
 
 ```text
 $ burnguard status
-BurnGuard 0.2.0
-  Budget today   75,556 / 2,000,000 weighted tokens
-  Hooks          user: off   project (proj): on
+BurnGuard 0.2.1
+  Budget today   50,967 / off weighted tokens
+  Hooks          user: off   project (my-app): on
   Since install:
-    Loops blocked                  1
-    Budget stops                   3
-    Secrets blocked in prompts     1
+    Repeat calls blocked           3
+    Budget stops                   0
+    Secrets blocked in prompts     0
     Secrets redacted from output   1
-    Secret files blocked           1
-    Injections flagged             1
+    Secret files blocked           0
+    Injections flagged             0
 ```
 
 Use `burnguard install --scope project` to enable it for one repository only (`.claude/settings.json`), or `--scope local` for a git-ignored `.claude/settings.local.json`. `burnguard uninstall` removes only BurnGuard's entries. Your other hooks are left alone, and the previous file is backed up as `settings.json.burnguard.bak`.
@@ -54,7 +49,9 @@ To switch it off for one session: `BURNGUARD_DISABLE=1 claude`.
 
 ### Loop blocking
 
-After every tool call BurnGuard stores a fingerprint of the call (tool + input, ignoring the free-text `description`) and of its result. Before a call, if that exact call already ran `loop_max_repeats` times (default 3) in the last `loop_window` calls (default 20) **and returned the identical result every time**, the call is denied and Claude is told why.
+After every tool call BurnGuard stores a fingerprint of the call (tool + input, ignoring the free-text `description`) and of its result. A failed call (for example a test command exiting non-zero) counts too, with its error as the result. Before a call, if that exact call was already made `loop_max_repeats` times (default 3) in the last `loop_window` calls (default 20) **and returned the identical result every time**, the call is denied and Claude is told why.
+
+Claude Code can send several identical calls in one batch, all checked before any of them finishes. BurnGuard counts calls that are still running, so a batch cannot slip past the limit.
 
 Re-running tests after editing code is not a loop, because the output changes. After `loop_hard_stop_after` loop blocks in one session (default 3), the agent is stopped.
 

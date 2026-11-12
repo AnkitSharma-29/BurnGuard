@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse")
+EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure")
 MARKER = "-m burnguard hook"
 
 

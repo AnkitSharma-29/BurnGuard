@@ -21,6 +21,9 @@ from burnguard import _store
 # Keys that vary between otherwise identical tool calls.
 _VOLATILE_KEYS = {"description"}
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]")
+# A reserved call that never reports back (denied by another hook, crashed)
+# stops counting after this long.
+_PENDING_TTL_S = 300.0
 
 
 def _stable(value: Any) -> Any:
@@ -81,7 +84,7 @@ class SessionLoops:
 
     @staticmethod
     def _default() -> dict[str, Any]:
-        return {"history": [], "blocks": 0, "updated": 0.0}
+        return {"history": [], "pending": {}, "blocks": 0, "updated": 0.0}
 
     def check(self, tool_name: str, tool_input: Any) -> int:
         """Times this exact call already returned an identical result."""
@@ -89,11 +92,50 @@ class SessionLoops:
         history = [tuple(h) for h in state.get("history", [])]
         return repeats(history, fingerprint([tool_name, tool_input]))
 
-    def record(self, tool_name: str, tool_input: Any, tool_response: Any) -> None:
+    def reserve(self, tool_name: str, tool_input: Any, tool_use_id: str | None, limit: int) -> int:
+        """Count earlier identical calls, including ones still running, and reserve a slot.
+
+        Claude Code can send several identical calls in one batch. Their
+        PreToolUse hooks all run before any of them finishes, so counting only
+        finished calls would let the whole batch through. Calls that passed
+        PreToolUse but have not finished yet are therefore counted too. Check
+        and reservation happen under one lock. Returns the count; a slot is
+        reserved only when the count is below `limit`.
+        """
+        call = fingerprint([tool_name, tool_input])
+        now = time.time()
         with _store.update_json(self.path, self._default()) as state:
+            pending = {
+                k: v
+                for k, v in state.get("pending", {}).items()
+                if now - float(v[1]) < _PENDING_TTL_S  # calls that never reported back
+            }
+            history = [tuple(h) for h in state["history"]]
+            done = sum(1 for c, _ in history if c == call)
+            running = sum(1 for c, _ in pending.values() if c == call)
+            # Finished identical calls only count when they all returned the same result.
+            n = (repeats(history, call) if done else 0) + running
+            if n < limit and tool_use_id:
+                pending[tool_use_id] = [call, now]
+            state["pending"] = pending
+            state["updated"] = now
+            return n
+
+    def record(
+        self, tool_name: str, tool_input: Any, tool_response: Any, tool_use_id: str | None = None
+    ) -> None:
+        with _store.update_json(self.path, self._default()) as state:
+            state.setdefault("pending", {}).pop(tool_use_id or "", None)
             state["history"].append([fingerprint([tool_name, tool_input]), fingerprint(tool_response)])
             state["history"] = state["history"][-self.window :]
             state["updated"] = time.time()
+
+    def release(self, tool_use_id: str | None) -> None:
+        """Forget a reservation without recording a result (e.g. the call was interrupted)."""
+        if not tool_use_id:
+            return
+        with _store.update_json(self.path, self._default()) as state:
+            state.setdefault("pending", {}).pop(tool_use_id, None)
 
     def add_block(self) -> int:
         with _store.update_json(self.path, self._default()) as state:

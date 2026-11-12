@@ -9,7 +9,7 @@ from burnguard.budget import Budget, BudgetExceeded, BudgetStatus
 from burnguard.loops import LoopDetector
 from burnguard.scanner import Finding, find_injection, find_pii, find_secrets, redact, scan
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "Budget",

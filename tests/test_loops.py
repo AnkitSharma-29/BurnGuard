@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -78,3 +79,22 @@ def test_session_fingerprint_ignores_nested_description():
     for desc in ("first try", "second try", "third try"):
         s.record("Bash", {"command": "make", "description": desc}, {"stdout": "err"})
     assert s.check("Bash", {"command": "make", "description": "fourth"}) == 3
+
+
+def test_stale_reservations_expire():
+    s = SessionLoops("ttl")
+    for i in range(3):
+        assert s.reserve("Bash", {"command": "x"}, f"id{i}", limit=3) == i
+    assert s.reserve("Bash", {"command": "x"}, "id3", limit=3) == 3
+    state = json.loads(s.path.read_text())
+    for v in state["pending"].values():
+        v[1] = time.time() - 3600
+    s.path.write_text(json.dumps(state))
+    assert s.reserve("Bash", {"command": "x"}, "id4", limit=3) == 0
+
+
+def test_record_clears_reservation():
+    s = SessionLoops("clr")
+    s.reserve("Bash", {"command": "x"}, "id0", limit=3)
+    s.record("Bash", {"command": "x"}, "out", "id0")
+    assert json.loads(s.path.read_text())["pending"] == {}

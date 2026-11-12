@@ -63,7 +63,7 @@ def test_loop_blocked_then_hard_stop():
         run_hook(post("make", "error: missing ;"))
     first = run_hook(pre("make"))
     assert decision(first) == "deny" and "continue" not in first
-    assert "same result" in first["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "without a different result" in first["hookSpecificOutput"]["permissionDecisionReason"]
     run_hook(pre("make"))
     third = run_hook(pre("make"))
     assert decision(third) == "deny" and third["continue"] is False
@@ -185,3 +185,57 @@ def test_injection_flagged_in_real_read_payload():
         },
     }
     assert "untrusted" in run_hook(event)["hookSpecificOutput"]["additionalContext"]
+
+
+def pre_id(cmd: str, tid: str, session="s1"):
+    return {**pre(cmd, session=session), "tool_use_id": tid}
+
+
+def failure(cmd: str, tid: str, error="Exit code 1\nboom", session="s1", interrupt=False):
+    """Shape captured from Claude Code 2.1 when a Bash command exits non-zero."""
+    return {
+        "hook_event_name": "PostToolUseFailure",
+        "session_id": session,
+        "tool_name": "Bash",
+        "tool_input": {"command": cmd, "description": "run it"},
+        "tool_use_id": tid,
+        "error": error,
+        "is_interrupt": interrupt,
+    }
+
+
+def test_failing_command_loop_is_blocked():
+    """Failing commands only fire PostToolUseFailure; they must still count."""
+    for i in range(3):
+        assert decision(run_hook(pre_id("npm test", f"t{i}"))) is None
+        run_hook(failure("npm test", f"t{i}"))
+    assert decision(run_hook(pre_id("npm test", "t3"))) == "deny"
+
+
+def test_failing_command_with_changing_error_is_progress():
+    for i in range(5):
+        assert decision(run_hook(pre_id("npm test", f"t{i}"))) is None
+        run_hook(failure("npm test", f"t{i}", error=f"{5 - i} tests failed"))
+
+
+def test_parallel_batch_of_identical_calls_is_capped():
+    """Claude Code sent 2 identical calls, then a batch of 4, all PreToolUse before any finished."""
+    for i in range(2):
+        run_hook(pre_id("npm test", f"a{i}"))
+        run_hook(failure("npm test", f"a{i}"))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outs = list(pool.map(lambda i: run_hook(pre_id("npm test", f"b{i}")), range(4)))
+    assert [decision(o) for o in outs].count("deny") == 3
+
+
+def test_parallel_identical_calls_without_history():
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outs = list(pool.map(lambda i: run_hook(pre_id("ls", f"c{i}", session="p2")), range(4)))
+    assert [decision(o) for o in outs].count("deny") == 1
+
+
+def test_interrupted_call_is_not_counted():
+    for i in range(3):
+        run_hook(pre_id("make", f"i{i}"))
+        run_hook(failure("make", f"i{i}", interrupt=True))
+    assert decision(run_hook(pre_id("make", "i3"))) is None

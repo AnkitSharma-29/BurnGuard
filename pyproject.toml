@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "burnguard"
-version = "0.2.0"
+version = "0.2.1"
 description = "Stop AI agents from burning tokens: loop blocking, daily token budgets and secret guarding for Claude Code and your own agents."
 readme = "README.md"
 license = "MIT"

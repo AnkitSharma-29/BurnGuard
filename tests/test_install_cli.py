@@ -32,7 +32,7 @@ def test_uninstall_leaves_other_hooks(tmp_path):
     other = {"type": "command", "command": "echo mine"}
     path.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [other]}]}}))
     install.install(path)
-    assert install.uninstall(path) == 3
+    assert install.uninstall(path) == 4
     assert json.loads(path.read_text()) == {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [other]}]}}
     assert not install.installed(path)
 
@@ -87,4 +87,4 @@ def test_cli_scan(tmp_path, capsys):
 def test_cli_status(capsys):
     assert main(["status"]) == 0
     out = capsys.readouterr().out
-    assert "Budget today" in out and "Loops blocked" in out
+    assert "Budget today" in out and "Repeat calls blocked" in out
