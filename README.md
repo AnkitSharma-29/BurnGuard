@@ -119,6 +119,17 @@ pip install "burnguard[mcp] @ git+https://github.com/AnkitSharma-29/BurnGuard.gi
 
 Tools: `budget_status`, `record_tokens`, `scan_text`, `redact_text`. Works with MCP Python SDK 1.x and 2.x.
 
+## Works alongside other Claude Code tools
+
+`burnguard install` and `burnguard uninstall` only touch BurnGuard's own hook entries, so other tools' hooks stay in place.
+
+**Tested with [Trail-Code](https://github.com/trailhq/Trail-Code) 0.29.0** (Claude Code 2.1, Windows). The two do different jobs: Trail-Code helps an agent find the right code so it uses fewer tokens, and BurnGuard caps and guards what it spends. In one real session with both installed:
+
+- Trail-Code added its code map at session start and with the prompt.
+- BurnGuard blocked a repeated command on the 4th try and redacted an AWS key from Bash output.
+- Neither tool reported a hook error.
+- Re-running either tool's installer kept the other tool's hooks.
+
 ## Configuration
 
 `burnguard config` prints every setting. `burnguard config <key> <value>` changes one.
