@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "burnguard"
+version = "0.2.0"
+description = "Stop AI agents from burning tokens: loop blocking, daily token budgets and secret guarding for Claude Code and your own agents."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ankit Sharma" }]
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["claude-code", "ai-agents", "llm", "token-budget", "guardrails", "hooks", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
+dev = ["pytest>=8", "ruff>=0.6", "mcp>=1.2"]
+
+[project.scripts]
+burnguard = "burnguard.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/AnkitSharma-29/BurnGuard"
+Issues = "https://github.com/AnkitSharma-29/BurnGuard/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/burnguard"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["burnguard", "conftest"]

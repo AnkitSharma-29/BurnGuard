@@ -1,369 +1,163 @@
-<p align="center">
-<pre>
-   ____        _        _        
-  / __ \      | |      | |       
- | |  | |_   _| |_ __ _| |_ ___  
- | |  | | | | | __/ _` | __/ _ \ 
- | |__| | |_| | || (_| | || (_) |
-  \___\_\\__,_|\__\__,_|\__\___/ 
-                                 
-</pre>
-</p>
+# BurnGuard
 
-# 🛡️ Qutato — The Smart Core Trust Platform
+**Stop AI agents from burning tokens.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![Active Development](https://img.shields.io/badge/Status-Active%20Development-blue.svg)](#quick-start)
-[![Open Source](https://img.shields.io/badge/Open-Source-brightgreen.svg)](https://github.com/AnkitSharma-29/qutato)
+BurnGuard is a small, local guard for [Claude Code](https://code.claude.com) and for agents you write yourself. It:
 
-Qutato is a local-first AI trust layer. It sits between your applications and your LLM providers, vetting every request and response with mathematical precision. The Gateway is the control plane — the product is **trust**.
+- **blocks loops**: when an agent runs the same command and keeps getting the same result, the next attempt is refused with a reason, and the agent is stopped if it keeps trying
+- **enforces a daily token budget**: it counts the real usage Claude Code records and stops the agent when the day's budget is spent
+- **keeps secrets away from the model**: it blocks prompts containing API keys, redacts keys from command output before the model sees it, and refuses to read `.env` / key files
+- **flags prompt injection** in files and web pages the agent reads, so the model treats that text as data
 
-If you want an AI safety layer that is fast, private, and always-on, this is it.
+It has no runtime dependencies, makes no network calls, and keeps all state in `~/.burnguard/`.
 
-[GitHub](https://github.com/AnkitSharma-29/qutato) · [SaaS Strategy](./docs/saas_strategy.md) · [Issues](https://github.com/AnkitSharma-29/qutato/issues)
+Real Claude Code session, asked to run `echo still-failing` six times (reply trimmed):
 
-Preferred setup: install via `pip` and run the gateway. Works on **Windows**, **macOS**, and **Linux**.
+```text
+I ran the command three times, and each returned `still-failing`. The fourth call was refused:
 
-```bash
-pip install -e qutato_core
+PreToolUse:Bash hook error: BurnGuard: this exact Bash call already ran 3 times with the
+same result. Repeating it will not change anything. Try a different approach, or ask the user.
 ```
 
----
+## Install
 
-## Models (selection + auth)
-
-- **100+ LLM providers** supported via [LiteLLM](https://github.com/BerriAI/litellm): OpenAI, Gemini, Anthropic, Mistral, Llama, Cohere, and more.
-- **BYOK (Bring Your Own Key):** Your API keys stay on your machine. Qutato never stores or transmits them.
-- **Model failover:** If one provider fails, Qutato can route to a fallback automatically.
-
----
-
-## Install (recommended)
-
-Runtime: Python ≥ 3.9.
+Requires Python 3.10+.
 
 ```bash
-git clone https://github.com/AnkitSharma-29/qutato.git
-cd qutato
-pip install -e qutato_core
+pip install git+https://github.com/AnkitSharma-29/BurnGuard.git
+burnguard install          # adds hooks to ~/.claude/settings.json
+burnguard budget set 2000000
 ```
 
-## Quick start (TL;DR)
+Restart Claude Code. That's it. Check what it has done at any time. This is the real output from the end-to-end test runs:
 
-```bash
-# Use the global CLI from anywhere
-qutato status
-qutato learn "The project deadline is next Friday."
-qutato recall "deadline"
+```text
+$ burnguard status
+BurnGuard 0.2.0
+  Budget today   75,556 / 2,000,000 weighted tokens
+  Hooks          user: off   project (proj): on
+  Since install:
+    Loops blocked                  1
+    Budget stops                   3
+    Secrets blocked in prompts     1
+    Secrets redacted from output   1
+    Secret files blocked           1
+    Injections flagged             1
 ```
 
+Use `burnguard install --scope project` to enable it for one repository only (`.claude/settings.json`), or `--scope local` for a git-ignored `.claude/settings.local.json`. `burnguard uninstall` removes only BurnGuard's entries. Your other hooks are left alone, and the previous file is backed up as `settings.json.burnguard.bak`.
 
+To switch it off for one session: `BURNGUARD_DISABLE=1 claude`.
 
----
+## How each feature works
 
-- **Secure by default:** Treat all external access as untrusted input.
-- **Local-only by default:** All data stays in `~/.qutato/` — portable, global, and private.
+### Loop blocking
 
-Run `qutato status` to surface health and configuration.
+After every tool call BurnGuard stores a fingerprint of the call (tool + input, ignoring the free-text `description`) and of its result. Before a call, if that exact call already ran `loop_max_repeats` times (default 3) in the last `loop_window` calls (default 20) **and returned the identical result every time**, the call is denied and Claude is told why.
 
-```bash
-qutato status
+Re-running tests after editing code is not a loop, because the output changes. After `loop_hard_stop_after` loop blocks in one session (default 3), the agent is stopped.
+
+### Daily budget
+
+Claude Code writes the API `usage` of every model response to the session transcript. BurnGuard reads new transcript lines (including subagent transcripts) on each prompt and tool call and adds them up as **weighted tokens**:
+
+```
+input + cache_creation + output + cache_read × 0.1
 ```
 
----
+Cache reads are discounted because they are billed at about a tenth of normal input, and a long session re-reads its whole context every turn. Counting them in full would use up any reasonable budget in minutes. Change the weight with `burnguard config cache_read_weight 1.0`.
 
-## Highlights
+When the budget is spent, new prompts are blocked before they reach the model, and an agent in the middle of a task is stopped at its next tool call. The budget is per machine, across all projects, and resets at local midnight.
 
-- **[Daily Budget Cap](#budget-manager)** — Prevent runaway local agents. Set a daily token limit (e.g., 500,000) and Qutato blocks all further LLM calls once reached.
-- **[Agent Loop Detector](#loop-detector)** — Auto-kills runaway agent loops. If an agent repeats the same action 3 times, Qutato stops it to save your budget.
-- **[Universal Agent Router](#agent-router)** — Detects and routes tasks to the best automation agent (Browser-Use, Open Interpreter, PyAutoGUI, etc.).
-- **[Input Guardrails](#input-guardrails)** — Junk detection, keyboard mashing filter, sensitive keyword flagging. Blocks bad prompts before they cost you tokens.
-- **[Persistent Memory Brain](#memory-engine)** — A "Second Brain" for agents that stores facts and recalls context across sessions.
-- **[MCP Server Support](#mcp)** — Connect Qutato directly to Cursor, Claude Code, or Antigravity via the Model Context Protocol.
-- **[Universal Compatibility](#integrations)** — Works with OpenClaw, Roo Code, Continue, Ollama, LM Studio, and any OpenAI-compatible tool.
-- **[Advanced Security](#security-model)** — Machine-bound AES-128 storage encryption and "OBLITERATUS Lite" prompt injection detection.
-- **[Qutato Turbo](#qutato-turbo)** — Sub-millisecond adaptive optimization. Includes Concise Mode and Context Pruning to save up to 40% on token costs.
-- **[Global CLI](#cli-commands)** — `qutato` and `qutato-devkit` commands available from any terminal.
+### Secrets
 
----
+| Where | What happens |
+|---|---|
+| Your prompt | Blocked (not sent) if it contains a known secret format. `burnguard config secrets_in_prompt warn` only warns. |
+| Bash output | Secrets are replaced with `[REDACTED:<kind>]` before the model sees the output. |
+| `Read` of `.env`, `*.pem`, `*.key`, `id_rsa`, `credentials.json`, ... | Refused. `.env.example`, `.pub` etc. are allowed. |
 
-## 🛠️ Qutato DevKit: The Automation Platform
+Detected secret formats: private key blocks, AWS access keys, GitHub tokens, Anthropic / OpenAI / OpenRouter / Google / Slack / Stripe keys, JWTs, credentials in URLs, and `password=` / `api_key=` style assignments with an opaque value.
 
-The **Qutato DevKit** is a unified toolkit for building and running autonomous AI agents safely. It bridges the gap between raw LLM power and real-world execution.
+### Prompt-injection flags
 
-| Component | Purpose |
-|:---|:---|
-| **MCP Server** | Exposes 9 trust tools (learn, recall, redact, check) to any IDE. |
-| **Agent Router** | Intelligent task dispatching to system-level automation agents. |
-| **Skills Pack** | Modular "Playbooks" that teach your AI how to use Qutato securely. |
-| **Browser Script** | Pre-configured `browser-use` execution with built-in trust checks. |
+When the result of a tool (web fetch, file read, command output, MCP tool) contains phrasing like "ignore previous instructions", "you are now in developer mode" or chat-template tokens, BurnGuard adds a note to the model's context saying the content is untrusted. It normalises case, Unicode and zero-width characters first. It does not block anything.
 
----
-
-## Everything we built so far
-
-### Core platform
-- **Gateway API** — Control plane for all LLM traffic. Handles routing, vetting, and quota tracking.
-- **DevKit CLI** — Setup agents, manage MCP, and verify system-wide safety.
-- **CLI surface:** `qutato status`, `qutato learn`, `qutato recall`, `qutato forget`, `qutato-devkit setup`.
-- **Persistent storage:** All data lives in `~/.qutato/` — portable, global, and private.
-
-### Trust + safety
-
-#### Budget Manager (Solo Builder's Shield) 💰
-- **Daily Cap:** Set a maximum number of tokens your agents are allowed to use each day.
-- **Volume Tracking:** Focuses on raw token volume and request counts, perfect for local models (Ollama).
-- **Auto-Reset:** Resets at midnight local time automatically.
-- **CLI Commands:** `qutato budget --set-tokens 500000`, `qutato budget --reset`.
-
-### Loop Detector 🔄
-- **Auto-Kill:** Detects when an agent is repeating the same prompt/logic in a loop.
-- **Pattern Matching:** Uses Jaccard similarity to catch subtle variations of the same loop.
-- **Cost Protection:** Each killed loop saves hundreds of tokens and prevents runaway bills.
-
-### Input Guardrails
-- **Junk Detection:** Blocks keyboard mashing (`asdfghjkl`), repeated characters, and nonsensical prompts.
-- **Sensitive Keyword Flagging:** Detects passwords, secret keys, and private data in prompts.
-- **Short Prompt Filter:** Prevents wasteful single-character or empty requests.
-
-#### Abstention Engine
-- **Adaptive Thresholding:** mathematically derived from risk minimization.
-- **Confidence Gating:** If the AI's internal confidence is below the threshold, Qutato suppresses the response.
-- **Lagrangian Derivation:** The threshold is derived from a formal trade-off between false positives and false negatives.
-
-#### PII Redactor (Privacy Shield) 🔒
-- **Automatic Masking**: Detects and masks Emails, SSNs, Credit Cards, JWTs, Cloud Secrets, and API Keys *locally* before they reach the LLM provider.
-- **Privacy vs. Execution Pattern**: The LLM (Mastermind) sees redacted data, but your local Python code (Executor) uses the real data from a secure vault to fulfill tasks (e.g., Amazon purchases).
-- **Transactional Bypass**: Use `--bypass-pii` (CLI) or `bypass_pii_redaction=True` (SDK) for intentional data sharing.
-
-#### Injection Guard (OBLITERATUS Lite) 🛡️
-- **Active Defense**: Automatically detects and blocks adversarial prompt injections (e.g., "Ignore previous instructions", "System override").
-- **Cost Protection**: Blocks malicious framing before it hits your LLM budget.
-
-#### Encrypted Storage 🔒
-- **Hardware Bound**: All local data (memories, budget, config) is encrypted using AES-128 with a key bound to your machine's hardware ID.
-- **Zero-Trust Local**: Even if physical files are stolen, they cannot be decrypted on another machine without your unique **Recovery Key**.
-
-#### Quota Savings
-- **Junk Interception:** Each blocked junk prompt saves ~10 tokens.
-- **Abstention Savings:** Each suppressed hallucination saves ~250 tokens.
-- **Real-Time Counter:** `qutato status` shows your cumulative savings.
-- **Persistent Tracking:** Saved in `~/.qutato/qutato_stats.json`.
-
-### Plug-and-Play Architecture (Zero Config)
-- **Out-of-the-box**: Qutato works immediately without any special configuration. It defaults to a high-performance **Basic Abstention Engine** that uses reliable adaptive thresholding.
-- **Advanced Extensions**: Power users and researchers can plug in their own custom engines by setting the `QUTATO_ABSTENTION_PLUGIN` environment variable. (e.g., `rescue_plugin.py` for recovery tasks).
-- **Skill Ecosystem**: Includes ready-to-use skills like `qutato-antigravity-monitor` for automatic server recovery.
-- **Community Safe**: No proprietary code or secret logic is required for the platform to provide full value.
-
-### Sidecar (Agent SDK)
-- **Direct Python API** — No HTTP gateway needed. Agents import `qutato` and call it directly.
-- **Functions:** `qutato.is_safe()`, `qutato.learn()`, `qutato.recall()`, `qutato.log_saving()`, `qutato.status()`.
-- **Use case:** Any Python-based agent (Antigravity, AutoGPT, LangChain, CrewAI) can use Qutato as its trust layer.
+## Use it in your own agent
 
 ```python
-from qutato_core.sidecar import qutato
+from burnguard import Budget, BudgetExceeded, LoopDetector, redact, scan
 
-if qutato.is_safe(user_prompt):
-    response = call_llm(user_prompt)
-else:
-    print("Blocked by Qutato")
+budget = Budget()                    # shares the limit set by `burnguard budget set`
+loops = LoopDetector(max_repeats=3)
+
+for step in range(50):
+    budget.check()                   # raises BudgetExceeded when today's budget is spent
+    prompt = redact(build_prompt())  # strips secrets and personal data
+    text, usage = call_llm(prompt)
+    budget.record_usage(usage)       # Anthropic-style usage dict, or budget.record(n)
+    if loops.is_loop(prompt, text):  # same call, same result, 3 times
+        break
 ```
 
-### Automation & Browser Agents 🌐
-Qutato provides native integration wrappers for the industry's best automation tools:
-- **[Browser-Use](https://github.com/browser-use/browser-use)**: AI-driven Chrome automation with Qutato safety checks.
-- **[Paperclip](https://github.com/paperclipai/paperclip)**: Orchestrate complex AI companies and agent teams with governance.
-- **[MiroFish](https://github.com/666ghj/MiroFish)**: Universal swarm intelligence engine for future prediction and modeling.
-- **[BettaFish](https://github.com/666ghj/BettaFish)**: Multi-agent public opinion analysis and information neutrality.
-- **[Agent-Browser](https://github.com/vercel-labs/agent-browser)**: Vercel's CLI browser automation, forced through the trust gate.
-- **[Last30Days](https://github.com/mvanhorn/last30days-skill)**: Safe multi-platform research (Reddit, X, YouTube) with budget and PII shielding.
-- **[Open Interpreter](https://github.com/OpenInterpreter/open-interpreter)**: Secure terminal and system task execution.
+`scan(text)` returns findings (`secret:*`, `pii:*`, `injection`). `redact(text)` replaces secrets and personal data (email, Luhn-valid card numbers, US SSNs, public IPv4 addresses, international phone numbers).
 
-### CLI commands
+From the shell: `burnguard scan file.txt` (exit code 1 if anything is found) or `cat file | burnguard scan --redact`.
 
-| Command | Description |
-|:---|:---|
-| `qutato status` | Health check, known facts, quota savings |
-| `qutato learn "fact"` | Store a new fact in the memory brain |
-| `qutato recall "query"` | Search for facts by keyword |
-| `qutato forget` | Clear the memory brain |
-| `qutato recovery-key` | View your machine-bound decryption key |
+## MCP server
 
----
+For MCP clients such as Cursor or Claude Desktop:
 
-## How it works (short)
-
+```bash
+pip install "burnguard[mcp] @ git+https://github.com/AnkitSharma-29/BurnGuard.git"
 ```
-Your App / IDE Extension / AI Agent / OpenClaw / CLI
-                    │
-                    ▼
-    ┌───────────────────────────────┐
-    │       Qutato Gateway          │
-    │      (control plane)          │
-    │                               │
-    │  ┌─────────┐ ┌────────────┐  │
-    │  │ Input    │ │ Abstention │  │
-    │  │ Guards   │ │ Engine     │  │
-    │  └─────────┘ └────────────┘  │
-    │  ┌─────────┐ ┌────────────┐  │
-    │  │ Memory   │ │ Quota      │  │
-    │  │ Brain    │ │ Tracker    │  │
-    │  └─────────┘ └────────────┘  │
-    └──────────────┬────────────────┘
-                   │
-        ┌──────────┼──────────┐
-        ▼          ▼          ▼
-    OpenAI     Gemini     Ollama
-    (Cloud)    (Cloud)    (Local)
-```
-
----
-
-## Integrations
-
-### IDE Extensions (VS Code, Cursor, Roo Code, Continue)
-Most AI extensions support "OpenAI Compatible" endpoints.
-- **Base URL:** `http://localhost:8000/v1`
-- **API Key:** `qutato_admin_secret_key`
-- **Result:** Every AI response is vetted before it reaches your editor.
-
-### OpenClaw 🦞
-Qutato is fully compatible with OpenClaw. Add Qutato as a custom provider in `~/.openclaw/openclaw.json`:
 
 ```json
-{
-  "models": {
-    "providers": {
-      "qutato": {
-        "baseUrl": "http://127.0.0.1:8000/v1",
-        "apiKey": "your_qutato_key"
-      }
-    }
-  }
-}
+{ "mcpServers": { "burnguard": { "command": "burnguard", "args": ["mcp"] } } }
 ```
 
-### Local Models (Ollama / LM Studio)
-Point your request to the Gateway and specify the provider:
-- **Model Name:** `ollama/llama3`, `lm_studio/model`, or `openai/localhost:11434`
-- **Benefit:** Qutato provides Guardrails and Memory even for 100% offline models.
-
-### CrewAI (Multi-Agent Framework)
-Qutato is the ultimate Trust Layer for multi-agent systems like [CrewAI](https://github.com/crewAIInc/crewAI). You can route an entire crew of autonomous agents through Qutato by setting the LLM `base_url`:
-
-```python
-from crewai import Agent, Task, Crew
-from langchain_openai import ChatOpenAI
-
-# Point your CrewAI agents to the Qutato Gateway
-qutato_llm = ChatOpenAI(
-    base_url="http://127.0.0.1:8000/v1",
-    api_key="your_qutato_key",
-    model="gpt-4o"
-)
-
-researcher = Agent(
-    role="Researcher",
-    goal="Find facts",
-    backstory="You are an AI researcher.",
-    llm=qutato_llm
-)
-```
-
-### Antigravity Agent
-Use the Sidecar SDK for direct Python integration:
-
-```python
-from qutato_core.sidecar import qutato
-
-qutato.is_safe("user prompt")    # Vet input
-qutato.learn("important fact")   # Store in brain
-qutato.recall("topic")           # Recall facts
-qutato.log_saving(250)           # Log token saving
-```
-
-Or use the workflow: type `/qutato` in your Antigravity chat.
-
----
-
-## Performance
-
-Verified via high-intensity stress test (100 iterations):
-
-| Metric | Result |
-|:---|:---|
-| **Average Latency** | **0.0222 ms** |
-| **P95 Latency** | **0.0167 ms** |
-| **Safety Effectiveness** | **84%** (Abstained on risky queries) |
-| **Throughput** | **Thousands of ops/sec** on standard hardware |
-
-Qutato adds less than **0.1 ms** of overhead. It is effectively invisible.
-
----
+Tools: `budget_status`, `record_tokens`, `scan_text`, `redact_text`. Works with MCP Python SDK 1.x and 2.x.
 
 ## Configuration
 
-Qutato Core settings can be found in `qutato_core/config.py` or managed via the CLI.
+`burnguard config` prints every setting. `burnguard config <key> <value>` changes one.
 
-| Key | Default | Description |
-|:---|:---|:---|
-| `DEFAULT_THRESHOLD` | `0.85` | Abstention sensitivity |
-| `DEBUG` | `true` | Verbose logging |
+| Setting | Default | |
+|---|---|---|
+| `daily_token_limit` | off | weighted tokens per day (`burnguard budget set/off`) |
+| `cache_read_weight` | `0.1` | how much a cached input token counts |
+| `loop_max_repeats` | `3` | identical call+result repeats before blocking |
+| `loop_window` | `20` | recent tool calls remembered per session |
+| `loop_hard_stop_after` | `3` | loop blocks before the agent is stopped |
+| `secrets_in_prompt` | `block` | `block`, `warn` or `off` |
+| `redact_tool_output` | `true` | redact secrets in Bash output |
+| `block_secret_files` | `true` | refuse `Read` on `.env` / key files |
+| `flag_injection` | `true` | warn the model about injection-like content |
 
----
+## Limits
 
-## Security model (important)
+These are the known limits. They are not hidden in an issue tracker.
 
-Qutato is designed for **local-first, privacy-first** operation.
+- **Pattern matching is not a security boundary.** The secret, personal-data and injection checks catch common formats and obvious phrasing. A determined attacker or an unusual key format gets through. Use BurnGuard as a seatbelt alongside proper secret management and permission settings.
+- **Redaction covers Bash output only.** Secrets in other tools' output (for example `Grep` results or a non-`.env` file read with `Read`) still reach the model.
+- **The budget can overshoot by one model turn.** It is enforced at prompt and tool-call boundaries, and a response already being generated is not cut off.
+- **Budget counting relies on Claude Code's transcript format**, which is not a documented API. It is verified with Claude Code 2.1.x. If the format changes, BurnGuard counts zero rather than breaking your session. If `burnguard status` stops showing usage, that is the cause.
+- **Weighted tokens are not dollars.** Model prices differ, and the budget is a volume cap.
+- **Each hook call starts Python**, which takes about 0.25 s per tool call on the Windows machine it was tested on.
+- If BurnGuard itself fails, it does nothing and lets the agent continue. Errors go to `~/.burnguard/burnguard.log`.
 
-- **No Data Exfiltration:** Your LLM keys, prompts, and memories never leave your machine.
-- **No Telemetry:** Zero analytics, zero tracking, zero phone-home.
-- **Encrypted Local Storage:** All data is encrypted with AES-128 and bound to your machine's Hardware ID.
-- **API Key Gating:** Even on localhost, the Gateway requires authentication to prevent unauthorized access from other apps on your network.
-- **Open Source Audit:** Every line of code is visible and verifiable on GitHub.
-
-### 🔑 Recovery and Migration
-Since data is machine-bound, use `qutato recovery-key` to generate a migration seed if you need to move your Qutato instance to a new device.
-
----
-
-## From source (development)
+## Develop
 
 ```bash
-git clone https://github.com/AnkitSharma-29/qutato.git
-cd qutato
-pip install -e qutato_core
-
-# Run tests
-pytest
+git clone https://github.com/AnkitSharma-29/BurnGuard.git && cd BurnGuard
+python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+pytest && ruff check src tests
 ```
 
----
-
-### Deployment & Production
-
-The Qutato Smart Core is designed to be embedded in your own applications using the [Sidecar SDK](#sidecar-agent-sdk).
-
----
-
-### ✨ Core Features
-- **⚡ Qutato Turbo**: Adaptive brevity and context pruning for high-speed local development.
-- **🛡️ Formal Trust (Abstention Engine)**: Adaptive thresholding for sensitive requests.
-- **🕵️‍♂️ Adversarial Probing (OBLITERATUS)**: Detects prompt injections, jailbreaks, and malicious framing.
-- **🏗️ Role-Aware Vetting (gstack Integration)**: Pro-level safety patterns for Architect, Security, and QA roles.
-- **🧠 Persistent Memory (Shared Brain)**: Local-first fact storage with Multi-Agent synchronization support.
-- **💰 Budget & Quota Management**: Daily token limits and usage tracking.
-- **🔄 Universal Gateway**: OpenAI-compatible API translating into Anthropic, Gemini, and Ollama formats.
-
-
-
-## Contributing
-We welcome contributions! Please see our [Issues](https://github.com/AnkitSharma-29/qutato/issues) for roadmaps and tasks.
+The hook tests run the real `burnguard hook` process with Claude Code event payloads, including one captured from a live session.
 
 ## License
-MIT License. See [LICENSE](LICENSE) for details.
 
----
-*Built for the Agentic Era by [Ankit Sharma](https://github.com/AnkitSharma-29)*
+MIT
